@@ -15,6 +15,7 @@ typedef struct ocfx_window_t ocfx_window_t;
 /* Window configuration */
 typedef struct {
     const char *title;           /* Window title */
+    const char *app_id;          /* Application ID (optional, defaults to title if not set) */
     int32_t width;               /* Initial width */
     int32_t height;              /* Initial height */
     bool resizable;              /* Allow resizing */
@@ -33,6 +34,7 @@ void ocfx_window_destroy(ocfx_window_t *window);
 
 /* Window properties */
 void ocfx_window_set_title(ocfx_window_t *window, const char *title);
+void ocfx_window_set_app_id(ocfx_window_t *window, const char *app_id);
 void ocfx_window_get_size(ocfx_window_t *window, int32_t *width, int32_t *height);
 void ocfx_window_set_size(ocfx_window_t *window, int32_t width, int32_t height);
 bool ocfx_window_is_configured(ocfx_window_t *window);

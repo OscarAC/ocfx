@@ -50,6 +50,7 @@ struct ocfx_window_t {
     bool configured;
     bool should_close;
     char *title;
+    char *app_id;
 
     /* User data */
     void *user_data;
@@ -67,6 +68,10 @@ struct ocfx_window_t {
     /* Input callbacks (set via ocfx/input.h) */
     void *key_callback;
     void *mouse_callback;
+
+    /* Key repeat info (compositor handles the actual repeat) */
+    int32_t repeat_rate;      /* Keys per second */
+    int32_t repeat_delay;     /* Initial delay in milliseconds */
 };
 
 /* Forward declarations for listeners */
@@ -412,11 +417,13 @@ static void keyboard_modifiers_handler(void *data, struct wl_keyboard *keyboard,
 
 static void keyboard_repeat_info_handler(void *data, struct wl_keyboard *keyboard,
                                         int32_t rate, int32_t delay) {
-    (void)data;
+    ocfx_window_t *window = data;
     (void)keyboard;
-    (void)rate;
-    (void)delay;
-    /* TODO: Implement key repeat */
+
+    window->repeat_rate = rate;
+    window->repeat_delay = delay;
+
+    printf("Key repeat configured: rate=%d, delay=%d\n", rate, delay);
 }
 
 /* ============================================================================
@@ -551,6 +558,9 @@ ocfx_window_t* ocfx_window_create(const ocfx_window_config_t *config) {
     window->height = config->height;
     window->user_data = config->user_data;
     window->title = strdup(config->title ? config->title : "OCFX Window");
+    window->app_id = strdup(config->app_id ? config->app_id : (config->title ? config->title : "ocfx"));
+    window->repeat_rate = 25;      /* Default: 25 keys/second */
+    window->repeat_delay = 600;    /* Default: 600ms initial delay */
 
     /* Initialize XKB */
     window->xkb_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
@@ -620,6 +630,7 @@ ocfx_window_t* ocfx_window_create(const ocfx_window_config_t *config) {
     }
     xdg_toplevel_add_listener(window->xdg_toplevel, &xdg_toplevel_listener, window);
     xdg_toplevel_set_title(window->xdg_toplevel, window->title);
+    xdg_toplevel_set_app_id(window->xdg_toplevel, window->app_id);
 
     /* Create EGL window */
     window->egl_window = wl_egl_window_create(window->surface, window->width,
@@ -659,6 +670,7 @@ void ocfx_window_destroy(ocfx_window_t *window) {
     if (window->xkb_context) xkb_context_unref(window->xkb_context);
     if (window->display) wl_display_disconnect(window->display);
     if (window->title) free(window->title);
+    if (window->app_id) free(window->app_id);
 
     free(window);
 }
@@ -672,6 +684,17 @@ void ocfx_window_set_title(ocfx_window_t *window, const char *title) {
 
     if (window->xdg_toplevel) {
         xdg_toplevel_set_title(window->xdg_toplevel, title);
+    }
+}
+
+void ocfx_window_set_app_id(ocfx_window_t *window, const char *app_id) {
+    if (!window || !app_id) return;
+
+    free(window->app_id);
+    window->app_id = strdup(app_id);
+
+    if (window->xdg_toplevel) {
+        xdg_toplevel_set_app_id(window->xdg_toplevel, app_id);
     }
 }
 
@@ -716,7 +739,15 @@ void ocfx_window_set_focus_callback(ocfx_window_t *window, ocfx_focus_callback_t
 /* Event loop */
 int ocfx_window_dispatch(ocfx_window_t *window) {
     if (!window || !window->display) return -1;
-    return wl_display_dispatch(window->display);
+
+    /* Flush any pending requests first */
+    wl_display_flush(window->display);
+
+    /* Process pending events without blocking */
+    wl_display_dispatch_pending(window->display);
+
+    /* Check for errors */
+    return wl_display_get_error(window->display);
 }
 
 bool ocfx_window_should_close(ocfx_window_t *window) {
