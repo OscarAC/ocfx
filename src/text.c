@@ -214,6 +214,60 @@ static glyph_cache_entry_t* get_glyph(ocfx_font_t *font, uint32_t codepoint) {
     return entry;
 }
 
+/* UTF-8 decoding helper
+ * Decodes the next UTF-8 character from the string and advances the pointer.
+ * Returns the Unicode codepoint, or 0 on error.
+ * Updates *str to point to the next character.
+ */
+static uint32_t utf8_decode(const char **str) {
+    const unsigned char *s = (const unsigned char *)*str;
+    uint32_t codepoint = 0;
+    int bytes = 0;
+
+    if (!s || !*s) return 0;
+
+    /* 1-byte sequence: 0xxxxxxx */
+    if ((*s & 0x80) == 0) {
+        codepoint = *s;
+        bytes = 1;
+    }
+    /* 2-byte sequence: 110xxxxx 10xxxxxx */
+    else if ((*s & 0xE0) == 0xC0) {
+        codepoint = (*s & 0x1F) << 6;
+        if ((s[1] & 0xC0) != 0x80) return 0;  /* Invalid continuation */
+        codepoint |= (s[1] & 0x3F);
+        bytes = 2;
+    }
+    /* 3-byte sequence: 1110xxxx 10xxxxxx 10xxxxxx */
+    else if ((*s & 0xF0) == 0xE0) {
+        codepoint = (*s & 0x0F) << 12;
+        if ((s[1] & 0xC0) != 0x80) return 0;
+        codepoint |= (s[1] & 0x3F) << 6;
+        if ((s[2] & 0xC0) != 0x80) return 0;
+        codepoint |= (s[2] & 0x3F);
+        bytes = 3;
+    }
+    /* 4-byte sequence: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx */
+    else if ((*s & 0xF8) == 0xF0) {
+        codepoint = (*s & 0x07) << 18;
+        if ((s[1] & 0xC0) != 0x80) return 0;
+        codepoint |= (s[1] & 0x3F) << 12;
+        if ((s[2] & 0xC0) != 0x80) return 0;
+        codepoint |= (s[2] & 0x3F) << 6;
+        if ((s[3] & 0xC0) != 0x80) return 0;
+        codepoint |= (s[3] & 0x3F);
+        bytes = 4;
+    }
+    /* Invalid UTF-8 sequence */
+    else {
+        bytes = 1;  /* Skip this byte */
+        codepoint = '?';  /* Replacement character */
+    }
+
+    *str += bytes;
+    return codepoint;
+}
+
 /* ============================================================================
  * Public API Implementation
  * ============================================================================ */
@@ -344,8 +398,12 @@ void ocfx_text_measure(ocfx_font_t *font, const char *text, float *width, float 
     }
 
     float w = 0;
-    for (const char *p = text; *p; p++) {
-        glyph_cache_entry_t *glyph = get_glyph(font, (uint32_t)*p);
+    const char *p = text;
+    while (*p) {
+        uint32_t codepoint = utf8_decode(&p);
+        if (codepoint == 0) break;
+
+        glyph_cache_entry_t *glyph = get_glyph(font, codepoint);
         if (glyph) {
             w += glyph->advance;
         }
@@ -364,8 +422,13 @@ void ocfx_text_measure_n(ocfx_font_t *font, const char *text, size_t len,
     }
 
     float w = 0;
-    for (size_t i = 0; i < len && text[i]; i++) {
-        glyph_cache_entry_t *glyph = get_glyph(font, (uint32_t)text[i]);
+    const char *p = text;
+    const char *end = text + len;
+    while (p < end && *p) {
+        uint32_t codepoint = utf8_decode(&p);
+        if (codepoint == 0) break;
+
+        glyph_cache_entry_t *glyph = get_glyph(font, codepoint);
         if (glyph) {
             w += glyph->advance;
         }
@@ -405,8 +468,12 @@ void ocfx_text_draw(ocfx_renderer_t *renderer, ocfx_font_t *font,
     float pen_x = x;
     float pen_y = y + (float)font->ascent;
 
-    for (const char *p = text; *p; p++) {
-        glyph_cache_entry_t *glyph = get_glyph(font, (uint32_t)*p);
+    const char *p = text;
+    while (*p) {
+        uint32_t codepoint = utf8_decode(&p);
+        if (codepoint == 0) break;  /* End of string or error */
+
+        glyph_cache_entry_t *glyph = get_glyph(font, codepoint);
         if (!glyph) continue;
 
         float x0 = pen_x + glyph->bearing_x;
@@ -486,16 +553,55 @@ void ocfx_text_draw_wrapped(ocfx_renderer_t *renderer, ocfx_font_t *font,
     ocfx_text_draw(renderer, font, text, rect.x, rect.y, color);
 }
 
-/* UTF-8 support - stubs */
+/* UTF-8 support */
 bool ocfx_text_is_valid_utf8(const char *text, size_t len) {
-    (void)text;
-    (void)len;
-    /* TODO: Implement UTF-8 validation */
+    if (!text) return false;
+
+    const char *p = text;
+    const char *end = text + len;
+
+    while (p < end && *p) {
+        const unsigned char *s = (const unsigned char *)p;
+
+        /* 1-byte sequence */
+        if ((*s & 0x80) == 0) {
+            p++;
+        }
+        /* 2-byte sequence */
+        else if ((*s & 0xE0) == 0xC0) {
+            if (p + 1 >= end || (s[1] & 0xC0) != 0x80) return false;
+            p += 2;
+        }
+        /* 3-byte sequence */
+        else if ((*s & 0xF0) == 0xE0) {
+            if (p + 2 >= end || (s[1] & 0xC0) != 0x80 || (s[2] & 0xC0) != 0x80) return false;
+            p += 3;
+        }
+        /* 4-byte sequence */
+        else if ((*s & 0xF8) == 0xF0) {
+            if (p + 3 >= end || (s[1] & 0xC0) != 0x80 || (s[2] & 0xC0) != 0x80 || (s[3] & 0xC0) != 0x80) return false;
+            p += 4;
+        }
+        /* Invalid */
+        else {
+            return false;
+        }
+    }
+
     return true;
 }
 
 size_t ocfx_text_utf8_char_count(const char *text) {
     if (!text) return 0;
-    /* Simple byte count for now */
-    return strlen(text);
+
+    size_t count = 0;
+    const char *p = text;
+
+    while (*p) {
+        uint32_t codepoint = utf8_decode(&p);
+        if (codepoint == 0) break;
+        count++;
+    }
+
+    return count;
 }
